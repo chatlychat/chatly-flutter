@@ -92,12 +92,12 @@ Chatly.instance.events.listen((env) => print('Event: ${env.type}'));
 
 `ChatlyConfig.theme` accepts a `ChatlyTheme`. Defaults:
 
-| Token            | Default           |
-| ---------------- | ----------------- |
-| `primary`        | `Color(0xFF2563EB)` |
-| `background`     | `Color(0xFFFFFFFF)` |
-| `foreground`     | `Color(0xFF0F172A)` |
-| `mutedForeground`| `Color(0xFF64748B)` |
+| Token             | Default             |
+| ----------------- | ------------------- |
+| `primary`         | `Color(0xFF2563EB)` |
+| `background`      | `Color(0xFFFFFFFF)` |
+| `foreground`      | `Color(0xFF0F172A)` |
+| `mutedForeground` | `Color(0xFF64748B)` |
 
 ```dart
 await Chatly.instance.configure(
