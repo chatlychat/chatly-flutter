@@ -24,7 +24,7 @@ class InitResponse {
     final workspaceJson = json['workspace'];
     final brandingJson = json['branding'];
     if (sessionJson is! Map || workspaceJson is! Map) {
-      throw FormatException('init: missing session or workspace');
+      throw const FormatException('init: missing session or workspace');
     }
     return InitResponse(
       session: InitSession.fromJson(Map<String, Object?>.from(sessionJson)),

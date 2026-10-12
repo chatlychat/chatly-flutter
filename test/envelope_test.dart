@@ -1,5 +1,4 @@
 import 'package:chatly/chatly.dart';
-import 'package:chatly/src/realtime/envelope.dart';
 import 'package:chatly/src/realtime/event_types.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -58,7 +57,7 @@ void main() {
     });
 
     test('round-trips through toJson', () {
-      final original = const RealtimeEnvelope(
+      const original = RealtimeEnvelope(
         version: 1,
         type: RealtimeEventType.typingStart,
         id: '0190abcd-0000-7000-8000-000000000000',

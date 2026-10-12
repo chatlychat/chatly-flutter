@@ -161,7 +161,7 @@ class ChatlyRestClient {
     final list = json['conversations'];
     if (list is! List) return const <ChatlyConversation>[];
     return list
-        .whereType<Map>()
+        .whereType<Map<String, dynamic>>()
         .map((m) => ChatlyConversation.fromJson(Map<String, Object?>.from(m)))
         .toList(growable: false);
   }
@@ -180,7 +180,7 @@ class ChatlyRestClient {
     final list = json['messages'];
     if (list is! List) return const <ChatlyMessage>[];
     return list
-        .whereType<Map>()
+        .whereType<Map<String, dynamic>>()
         .map((m) => ChatlyMessage.fromJson(<String, Object?>{
               ...Map<String, Object?>.from(m),
               'conversationId': conversationId,
@@ -202,7 +202,7 @@ class ChatlyRestClient {
     final list = json['results'];
     if (list is! List) return const <ChatlyKbResult>[];
     return list
-        .whereType<Map>()
+        .whereType<Map<String, dynamic>>()
         .map((m) => ChatlyKbResult.fromJson(Map<String, Object?>.from(m)))
         .toList(growable: false);
   }

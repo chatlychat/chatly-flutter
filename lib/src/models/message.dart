@@ -185,7 +185,7 @@ class ChatlyMessage {
     final raw = json['attachments'];
     final atts = raw is List
         ? raw
-            .whereType<Map>()
+            .whereType<Map<String, dynamic>>()
             .map((m) => ChatlyAttachment.fromJson(Map<String, Object?>.from(m)))
             .toList(growable: false)
         : const <ChatlyAttachment>[];
@@ -207,7 +207,7 @@ class ChatlyMessage {
     final raw = payload['attachments'];
     final atts = raw is List
         ? raw
-            .whereType<Map>()
+            .whereType<Map<String, dynamic>>()
             .map((m) => ChatlyAttachment.fromJson(Map<String, Object?>.from(m)))
             .toList(growable: false)
         : const <ChatlyAttachment>[];

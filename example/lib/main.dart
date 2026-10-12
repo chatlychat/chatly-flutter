@@ -13,7 +13,9 @@ Future<void> main() async {
   runApp(const ExampleApp());
 }
 
+/// The sample app's root widget.
 class ExampleApp extends StatelessWidget {
+  /// Creates the sample app.
   const ExampleApp({super.key});
 
   @override
@@ -26,7 +28,9 @@ class ExampleApp extends StatelessWidget {
   }
 }
 
+/// The one screen in the sample: a button that opens the chat.
 class HomeScreen extends StatelessWidget {
+  /// Creates the sample's home screen.
   const HomeScreen({super.key});
 
   @override
