@@ -1,0 +1,34 @@
+name: chatly
+# NOT `livechat`. That was this package's name until 2026-10-12, and
+# pub.dev/packages/livechat is somebody else's package
+# (github.com/Mastersam07/livechat) — so the README's `livechat: ^0.1.0`
+# would have installed a stranger's code into a customer's app. `chatly`
+# and `chatlychat` were both free; this takes `chatly`.
+description: Official Flutter SDK for the Chatly live chat and customer messaging platform. Provides a drop-in widget, agent inbox primitives, and realtime events.
+version: 0.1.0
+homepage: https://chatlychat.com
+repository: https://github.com/chatlychat/chatly-flutter
+documentation: https://chatlychat.com/docs/sdk-flutter
+issue_tracker: https://github.com/chatlychat/chatly-flutter/issues
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.1.0
+  socket_io_client: ^2.0.3
+  shared_preferences: ^2.2.2
+  flutter_secure_storage: ^9.0.0
+  file_picker: ^6.1.1
+  intl: ^0.19.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
