@@ -49,7 +49,33 @@ class _ChatlyChatPageState extends State<ChatlyChatPage> {
   @override
   void dispose() {
     _envelopeSub?.cancel();
+    // A socket for a thread nobody is looking at is a connection and a 1h
+    // token for nothing.
+    unawaited(Chatly.instance.openConversation(null));
     super.dispose();
+  }
+
+  /// Scope live delivery to the thread on screen.
+  ///
+  /// A visitor's realtime token names ONE conversation, so this has to happen
+  /// here rather than at `configure()` — and again when a first send creates
+  /// the conversation, which is the only moment this page learns its id.
+  ///
+  /// A refused mint is NOT fatal: the thread keeps working over REST, which
+  /// is the pull-based behaviour this page had before realtime connected at
+  /// all. It is reported rather than swallowed because the one refusal an
+  /// integrator can act on — a channel with an origin allow-list, which a
+  /// native app cannot satisfy — is otherwise invisible.
+  Future<void> _attachRealtime(String? conversationId) async {
+    if (conversationId == null) return;
+    if (!(Chatly.instance.config?.autoConnectRealtime ?? true)) return;
+    if (Chatly.instance.realtimeConversationId == conversationId) return;
+    try {
+      await Chatly.instance.openConversation(conversationId);
+    } on Object catch (e) {
+      if (!mounted) return;
+      setState(() => _error = 'Live updates unavailable: $e');
+    }
   }
 
   Future<void> _bootstrap() async {
@@ -72,6 +98,7 @@ class _ChatlyChatPageState extends State<ChatlyChatPage> {
           _messages = history;
           _loading = false;
         });
+        await _attachRealtime(_conversationId);
       } else {
         if (!mounted) return;
         setState(() => _loading = false);
@@ -135,6 +162,9 @@ class _ChatlyChatPageState extends State<ChatlyChatPage> {
             res.message,
           ];
         });
+        // The first send is where this page learns its conversation id, and
+        // therefore the first moment a realtime token can be minted at all.
+        await _attachRealtime(res.conversationId);
       } else {
         await client.sendMessage(
           conversationId: _conversationId!,

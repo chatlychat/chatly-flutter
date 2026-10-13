@@ -4,39 +4,138 @@ import 'package:socket_io_client/socket_io_client.dart' as io;
 
 import '../chatly_config.dart';
 import '../realtime/envelope.dart';
-import '../realtime/event_types.dart';
+import 'rest_client.dart';
 
-/// Socket.IO based realtime transport speaking the v1 envelope protocol.
+/// Mints a conversation-scoped realtime token — `ChatlyRestClient.mintRealtimeToken`.
+typedef ChatlyRealtimeTokenMinter = Future<ChatlyRealtimeToken> Function(
+  String conversationId,
+);
+
+/// A socket.io connection, narrowed to what this transport uses.
 ///
-/// Translates raw socket payloads into typed [RealtimeEnvelope]s exposed
-/// through the [envelopes] stream, and provides a tiny imperative API for
-/// (un)subscribing to channels.
+/// The seam exists so the handshake can be asserted in a unit test without a
+/// gateway: the defect it was written for was invisible to every
+/// response-shaped test, because the socket was refused before any response
+/// existed.
+abstract class ChatlySocketHandle {
+  /// Whether the socket is open.
+  bool get connected;
+
+  /// Registers a handler for a socket.io event.
+  void on(String event, void Function(Object? data) handler);
+
+  /// Emits an event with an optional payload.
+  void emit(String event, [Object? data]);
+
+  /// Opens the connection.
+  void connect();
+
+  /// Closes it and releases its listeners.
+  void dispose();
+}
+
+/// Opens a socket for [url] with [options]. Replaced in tests.
+typedef ChatlySocketOpener = ChatlySocketHandle Function(
+  String url,
+  Map<String, dynamic> options,
+);
+
+class _IoSocketHandle implements ChatlySocketHandle {
+  _IoSocketHandle(this._socket);
+
+  final io.Socket _socket;
+
+  @override
+  bool get connected => _socket.connected;
+
+  @override
+  void on(String event, void Function(Object? data) handler) =>
+      _socket.on(event, handler);
+
+  @override
+  void emit(String event, [Object? data]) => _socket.emit(event, data);
+
+  @override
+  void connect() => _socket.connect();
+
+  @override
+  void dispose() => _socket.dispose();
+}
+
+/// The real opener.
+ChatlySocketHandle defaultSocketOpener(
+  String url,
+  Map<String, dynamic> options,
+) =>
+    _IoSocketHandle(io.io(url, options));
+
+/// Socket.IO transport for a VISITOR socket.
+///
+/// ── The credential, and why there are two of them ─────────────────────────
+///
+/// A visitor holds two tokens and they are not interchangeable:
+///
+///  * `session.token` from `POST /v1/widget/init` — long-lived, identifies the
+///    visitor, carried in the BODY of every REST call. **The gateway does not
+///    accept it.**
+///  * a realtime token from `POST /v1/widget/realtime/token` — HS256, scoped
+///    to ONE conversation, 1h TTL. This is what the socket wants.
+///
+/// This transport used to hand the gateway `{ publicId, visitorToken }`.
+/// `handshakeAuthSchema` (`apps/realtime/src/gateway.ts:54-59`) is
+/// `{ token, kind? }` and `kind` **defaults to agent**, so the gateway
+/// verified a visitor's HS256 token as RS256 against the platform public key,
+/// failed, and answered a bare `Unauthorized` naming neither credential —
+/// which is why "realtime does not work on mobile" had no diagnosis for so
+/// long. Every field of that handshake was wrong: the key names, the
+/// credential, and the missing `kind`.
+///
+/// ── Scope ──────────────────────────────────────────────────────────────────
+///
+/// The token names one conversation, and the gateway joins the socket to
+/// `v:<workspace>:<conversation>` from the token's own claim. It registers no
+/// `subscribe` listener for a visitor at all — the old `subscribe()` here
+/// emitted an envelope on the `event` channel, which nothing on the server
+/// has ever read — so a conversation switch is a re-mint and a reconnect, not
+/// a second subscribe. [connectTo] does both.
 class ChatlySocketTransport {
-  /// Creates a transport. [token] is the visitor token returned by
-  /// `/v1/widget/init`; [workspaceId] / [contactId] are needed for outbound
-  /// envelopes.
+  /// Creates a transport. [mintToken] is called once per connection ATTEMPT
+  /// path — on connect, and again before a reconnect.
   ChatlySocketTransport({
     required this.config,
-    required this.token,
+    required this.mintToken,
     required this.workspaceId,
     required this.contactId,
-  });
+    ChatlySocketOpener? opener,
+  }) : _opener = opener ?? defaultSocketOpener;
 
   /// Active SDK config.
   final ChatlyConfig config;
 
-  /// Visitor session token.
-  final String token;
+  /// Mints the conversation-scoped realtime token.
+  final ChatlyRealtimeTokenMinter mintToken;
 
-  /// Workspace id stamped on outbound envelopes.
+  /// Workspace id, for callers that need it alongside the stream.
   final String workspaceId;
 
-  /// Contact id used for typing payloads.
+  /// Contact id, for callers that need it alongside the stream.
   final String contactId;
 
-  io.Socket? _socket;
+  final ChatlySocketOpener _opener;
+
+  ChatlySocketHandle? _socket;
   final _envelopes = StreamController<RealtimeEnvelope>.broadcast();
   final _connected = StreamController<bool>.broadcast();
+
+  String? _currentToken;
+  String? _conversationId;
+
+  /// Bumped by every [connectTo] and every [close].
+  ///
+  /// A mint is a round trip. Without this, one that lands after the caller
+  /// switched conversations (or closed the chat) would open a socket for a
+  /// thread nobody is looking at.
+  int _generation = 0;
 
   /// Stream of decoded inbound envelopes.
   Stream<RealtimeEnvelope> get envelopes => _envelopes.stream;
@@ -44,18 +143,54 @@ class ChatlySocketTransport {
   /// Stream of connection state changes (`true` = connected).
   Stream<bool> get connected => _connected.stream;
 
-  /// Opens the underlying socket. Safe to call multiple times — re-uses an
-  /// existing socket when present.
-  void connect() {
-    if (_socket != null) return;
-    final socket = io.io(
+  /// The conversation this socket is scoped to, or null when closed.
+  String? get conversationId => _conversationId;
+
+  /// Mints a token for [conversationId] and opens the socket with it.
+  ///
+  /// Closing the previous socket happens FIRST and synchronously: an await
+  /// before it would leave two sockets alive across a switch, and the old one
+  /// would keep delivering the old conversation's events.
+  ///
+  /// Throws whatever the mint throws — a [ChatlyRestException] 404 for a
+  /// conversation that is not this visitor's own, or a 403 on a channel with
+  /// an origin allow-list (a native app sends no `Origin`, so it passes only
+  /// where no list is configured). Treat it as "live delivery is unavailable,
+  /// keep polling", not as a dead thread.
+  Future<void> connectTo(String conversationId) async {
+    _close();
+    final generation = ++_generation;
+    _conversationId = conversationId;
+
+    final minted = await mintToken(conversationId);
+    if (generation != _generation) {
+      // Stood down while the mint was in flight — switched, or disposed.
+      return;
+    }
+    _currentToken = minted.token;
+
+    final socket = _opener(
       config.realtimeBaseUrl,
       io.OptionBuilder()
           .setTransports(<String>['websocket'])
+          .setPath('/socket.io')
           .disableAutoConnect()
-          .setAuth(<String, String>{
-            'publicId': config.publicId,
-            'visitorToken': token,
+          /*
+           * `setAuthFn`, not `setAuth`. socket_io_client calls this on every
+           * engine `open` — including every reconnect (`Socket.onopen` →
+           * `auth(cb)`), which is the whole reason it exists. A static map is
+           * captured once and replayed verbatim, so a visitor whose socket
+           * dropped after the token's 1h lifetime reconnects with an expired
+           * credential and is refused silently for the rest of the session.
+           *
+           * This is why no hand-rolled reconnect loop is needed here: the
+           * Dart client has the same per-attempt hook the browser one does.
+           */
+          .setAuthFn((void Function(Map<dynamic, dynamic> auth) callback) {
+            callback(<String, String>{
+              'token': _currentToken ?? minted.token,
+              'kind': 'visitor',
+            });
           })
           .setReconnectionAttempts(0x7fffffff)
           .setReconnectionDelay(1000)
@@ -63,12 +198,33 @@ class ChatlySocketTransport {
           .build(),
     );
 
-    socket.onConnect((_) => _connected.add(true));
-    socket.onDisconnect((_) => _connected.add(false));
+    socket.on('connect', (_) => _connected.add(true));
+    socket.on('disconnect', (_) {
+      _connected.add(false);
+      // Re-mint on the way down so the token is already fresh by the time
+      // the backoff gets to the next attempt. The auth hook above makes a
+      // refreshed token reachable; this is what makes it exist.
+      unawaited(_refreshToken(generation));
+    });
+    socket.on('connect_error', (_) => unawaited(_refreshToken(generation)));
     socket.on('event', _handleRaw);
-    socket.on('envelope', _handleRaw);
     socket.connect();
     _socket = socket;
+  }
+
+  Future<void> _refreshToken(int generation) async {
+    if (generation != _generation) return;
+    final conversationId = _conversationId;
+    if (conversationId == null) return;
+    try {
+      final minted = await mintToken(conversationId);
+      if (generation != _generation) return;
+      _currentToken = minted.token;
+    } on Object {
+      // Keep the token we hold: socket.io retries on its own backoff either
+      // way, and a stale token has a chance where none has none. A failed
+      // mint is usually the same outage as the dropped socket.
+    }
   }
 
   void _handleRaw(Object? raw) {
@@ -81,60 +237,56 @@ class ChatlySocketTransport {
     }
   }
 
-  /// Subscribes to one or more realtime channels. Channels are workspace-
-  /// scoped strings like `workspace:{id}` or `conversation:{id}`.
-  void subscribe(List<String> channels, {String? lastEventId}) {
-    _emit(RealtimeEventType.subscribe, {
-      'channels': channels,
-      if (lastEventId != null) 'lastEventId': lastEventId,
-    });
-  }
+  /// Emits a typing-start signal for the connected conversation.
+  ///
+  /// `typing.start` is its own socket.io channel and the gateway reads
+  /// NOTHING from the payload — every field that matters for trust comes from
+  /// the token, so a client cannot claim another conversation, another contact
+  /// or agent authorship. These used to be emitted as v1 envelopes on the
+  /// `event` channel, where no listener exists.
+  void typingStart(String conversationId) => _emit('typing.start');
 
-  /// Emits a typing-start event for [conversationId].
-  void typingStart(String conversationId) {
-    _emit(RealtimeEventType.typingStart, {
+  /// Emits a typing-stop signal for the connected conversation.
+  void typingStop(String conversationId) => _emit('typing.stop');
+
+  /// Tells the agent side the visitor has read up to [messageId].
+  ///
+  /// The one other thing a visitor socket may publish. The gateway refuses a
+  /// payload whose ids do not match the token's, so this asserts a fact about
+  /// this visitor in this conversation only.
+  void markRead(String messageId) {
+    final conversationId = _conversationId;
+    if (conversationId == null) return;
+    _emit('message.read', <String, Object?>{
       'conversationId': conversationId,
-      'actorType': 'contact',
-      'actorId': contactId,
+      'messageId': messageId,
+      'readerType': 'contact',
+      'readerId': contactId,
+      'readAt': DateTime.now().toUtc().toIso8601String(),
     });
   }
 
-  /// Emits a typing-stop event for [conversationId].
-  void typingStop(String conversationId) {
-    _emit(RealtimeEventType.typingStop, {
-      'conversationId': conversationId,
-      'actorType': 'contact',
-      'actorId': contactId,
-    });
-  }
-
-  void _emit(RealtimeEventType type, Map<String, Object?> payload) {
+  void _emit(String event, [Object? payload]) {
     final socket = _socket;
     if (socket == null || !socket.connected) return;
-    final envelope = <String, Object?>{
-      'v': kRealtimeProtocolVersion,
-      'type': type.wireName,
-      'id': _generateClientId(),
-      'ts': DateTime.now().toUtc().millisecondsSinceEpoch,
-      'workspace_id': workspaceId,
-      'payload': payload,
-    };
-    socket.emit('event', envelope);
+    socket.emit(event, payload);
   }
 
-  /// Tears down the socket and closes all streams.
-  Future<void> dispose() async {
+  void _close() {
+    _generation += 1;
+    _currentToken = null;
+    _conversationId = null;
     _socket?.dispose();
     _socket = null;
-    await _envelopes.close();
-    await _connected.close();
   }
 
-  /// Generates a client-local identifier for outbound envelopes. Server
-  /// regenerates server-authoritative ids on receipt; this only needs to be
-  /// unique within the socket lifetime.
-  String _generateClientId() {
-    final now = DateTime.now().microsecondsSinceEpoch;
-    return 'c$now';
+  /// Closes the socket, keeping the streams open for a later [connectTo].
+  void close() => _close();
+
+  /// Tears the socket down and closes all streams.
+  Future<void> dispose() async {
+    _close();
+    await _envelopes.close();
+    await _connected.close();
   }
 }

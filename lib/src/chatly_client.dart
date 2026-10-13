@@ -97,9 +97,17 @@ class Chatly {
       await _tokenStore!.write(init.session.token);
     }
 
-    if (config.autoConnectRealtime) {
-      _attachSocket(init);
-    }
+    /*
+     * No socket here any more.
+     *
+     * This used to call `_attachSocket(init)`, handing the gateway the
+     * long-lived `session.token` with a handshake of
+     * `{ publicId, visitorToken }`. The gateway accepts `{ token, kind? }`
+     * where `kind` defaults to agent, so that token was verified as RS256
+     * against the platform public key and refused. A visitor socket is minted
+     * per CONVERSATION — see [openConversation], which the bundled chat page
+     * calls when it knows which thread it is showing.
+     */
     return init;
   }
 
@@ -114,11 +122,14 @@ class Chatly {
         init.session.token != _visitorToken) {
       _visitorToken = init.session.token;
       await _tokenStore?.write(init.session.token);
-      if (_config?.autoConnectRealtime ?? true) {
-        await _socket?.dispose();
-        _socket = null;
-        _attachSocket(init);
-      }
+      /*
+       * The contact may have changed, and a realtime token is scoped to one
+       * conversation belonging to one contact — so the open socket is torn
+       * down rather than reconnected. The UI re-opens the thread it is
+       * showing, which re-mints against the new session.
+       */
+      await _socket?.dispose();
+      _socket = null;
     }
   }
 
@@ -136,9 +147,6 @@ class Chatly {
       if (init.session.token.isNotEmpty) {
         _visitorToken = init.session.token;
         await _tokenStore?.write(init.session.token);
-      }
-      if (_config?.autoConnectRealtime ?? true) {
-        _attachSocket(init);
       }
     }
   }
@@ -228,6 +236,36 @@ class Chatly {
     return _rest!.getKbArticle(slug);
   }
 
+  /// Scopes live delivery to [conversationId], or closes the socket with null.
+  ///
+  /// A visitor's realtime token names ONE conversation, so there is no such
+  /// thing as a session-wide visitor socket: the thread on screen is what
+  /// decides which socket is open. Switching re-mints and reconnects, because
+  /// reusing the socket would keep delivering the previous conversation's
+  /// events.
+  ///
+  /// [ChatlyChatPage] calls this for you when
+  /// [ChatlyConfig.autoConnectRealtime] is true (the default). Call it
+  /// yourself if you render your own thread, or if you turned that off.
+  ///
+  /// Throws what the mint throws — a 404 for a conversation that is not this
+  /// visitor's own, a 403 on a channel with an origin allow-list, which a
+  /// native app cannot satisfy because it sends no `Origin`. A thrown mint
+  /// means live delivery is unavailable, not that the thread is dead: history
+  /// and sending still work over REST.
+  Future<void> openConversation(String? conversationId) async {
+    _ensureReady();
+    if (conversationId == null) {
+      _socket?.close();
+      return;
+    }
+    await _ensureSocket().connectTo(conversationId);
+  }
+
+  /// The conversation live delivery is scoped to, or null when no socket is
+  /// open.
+  String? get realtimeConversationId => _socket?.conversationId;
+
   /// Emits a typing-start signal on [conversationId].
   void typingStart(String conversationId) =>
       _socket?.typingStart(conversationId);
@@ -257,21 +295,21 @@ class Chatly {
     }
   }
 
-  void _attachSocket(InitResponse init) {
-    final config = _config!;
+  ChatlySocketTransport _ensureSocket() {
+    final existing = _socket;
+    if (existing != null) return existing;
+    final session = _session!.session;
     final socket = ChatlySocketTransport(
-      config: config,
-      token: init.session.token,
-      workspaceId: init.session.workspaceId,
-      contactId: init.session.contactId,
+      config: _config!,
+      workspaceId: session.workspaceId,
+      contactId: session.contactId,
+      // The gateway's credential, minted per conversation. NOT the session
+      // token this used to pass.
+      mintToken: (conversationId) => _rest!.mintRealtimeToken(conversationId),
     );
     socket.envelopes.listen(_onEnvelope);
-    socket.connect();
-    socket.subscribe(<String>[
-      'workspace:${init.session.workspaceId}',
-      'contact:${init.session.contactId}',
-    ]);
     _socket = socket;
+    return socket;
   }
 
   void _onEnvelope(RealtimeEnvelope envelope) {

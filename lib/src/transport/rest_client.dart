@@ -40,8 +40,67 @@ class ChatlyRestException implements Exception {
   /// Response body returned by the server (may be empty).
   final String body;
 
+  /// The API's `error.code`, or null when the body is not one of ours.
+  String? get code => _errorField('code');
+
+  /// The API's `error.message` — copy written for the VISITOR to read.
+  ///
+  /// The upload route refuses on three conditions and each one's message is
+  /// meant to be shown as-is: "File uploads are turned off for this chat",
+  /// "That file type is not accepted: …", "Files must be under 10 MB". Render
+  /// this when it is non-null and keep [toString] for the log.
+  ///
+  /// The API NESTS every error — `app-exception.filter.ts` ends with
+  /// `send({ error: body })` — so the un-nested read is only a fallback for a
+  /// proxy answering in its own shape.
+  String? get visitorMessage => _errorField('message');
+
+  String? _errorField(String key) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is! Map) return null;
+      final nested = decoded['error'];
+      final value = nested is Map ? nested[key] : decoded[key];
+      return value is String && value.isNotEmpty ? value : null;
+    } on FormatException {
+      return null;
+    }
+  }
+
   @override
   String toString() => 'ChatlyRestException($status on $path): $body';
+}
+
+/// Thrown when an upload fails somewhere other than the API — the object
+/// storage PUT itself, or a deployment with no object storage configured.
+///
+/// A refusal from the presign route is a [ChatlyRestException] and carries the
+/// server's own [ChatlyRestException.visitorMessage]; this is for the half of
+/// the flow that does not go through our API at all.
+class ChatlyUploadException implements Exception {
+  /// Creates a [ChatlyUploadException].
+  ChatlyUploadException(this.message, {this.status});
+
+  /// Human-readable reason.
+  final String message;
+
+  /// Status returned by object storage, when there was one.
+  final int? status;
+
+  @override
+  String toString() => 'ChatlyUploadException($message)';
+}
+
+/// A minted visitor realtime token: HS256, one conversation, 1h TTL.
+class ChatlyRealtimeToken {
+  /// Creates a [ChatlyRealtimeToken].
+  const ChatlyRealtimeToken({required this.token, required this.expiresAt});
+
+  /// The token to put in the Socket.IO handshake as `auth.token`.
+  final String token;
+
+  /// When the gateway stops accepting it.
+  final DateTime expiresAt;
 }
 
 /// Thin HTTP client that mirrors the public `/v1/widget/*` REST surface
@@ -132,23 +191,117 @@ class ChatlyRestClient {
     });
   }
 
-  /// `POST /v1/widget/uploads` — stores raw bytes server-side and returns the
-  /// resulting [ChatlyAttachment]. Bytes are sent base64-encoded so the widget
-  /// surface stays single-content-type (no multipart parser registered).
+  /// `POST /v1/widget/realtime/token` — mints the credential the Socket.IO
+  /// gateway accepts from a visitor.
+  ///
+  /// HS256, scoped to ONE conversation, 1h TTL. The long-lived
+  /// `session.token` from `init` is not accepted there: an unlabelled
+  /// handshake is verified as an agent token (RS256, platform public key) and
+  /// refused with a bare `Unauthorized`.
+  ///
+  /// 404s when the conversation is not this visitor's own — the mint checks
+  /// `conv.contactId == session.contactId` server-side.
+  Future<ChatlyRealtimeToken> mintRealtimeToken(String conversationId) async {
+    final json = await _post('/v1/widget/realtime/token', {
+      'publicId': config.publicId,
+      'visitorToken': visitorToken() ?? '',
+      'conversationId': conversationId,
+    });
+    final token = json['token'];
+    if (token is! String || token.isEmpty) {
+      throw const FormatException('realtime/token: missing token');
+    }
+    final expiresAt = json['expiresAt'];
+    return ChatlyRealtimeToken(
+      token: token,
+      expiresAt: expiresAt is String
+          ? (DateTime.tryParse(expiresAt) ??
+              DateTime.now().toUtc().add(const Duration(hours: 1)))
+          : DateTime.now().toUtc().add(const Duration(hours: 1)),
+    );
+  }
+
+  /// Uploads a file and answers the [ChatlyAttachment] a message carries.
+  ///
+  /// THREE steps, and the first one is what this got wrong for its whole life.
+  /// It posted `{ filename, mimeType, data }` — a base64 blob — to the presign
+  /// route, whose schema is
+  /// `{ visitorToken, publicId, filename, contentType, sizeBytes }` and which
+  /// takes no bytes at all. zod dropped `mimeType` and `data` as unknown keys
+  /// and answered 400 on the missing `contentType`, so no attachment ever
+  /// uploaded from this SDK.
+  ///
+  /// 1. presign — the API mints the key under `workspaces/<id>/…`, so a
+  ///    visitor cannot choose where their file lands;
+  /// 2. the bytes go STRAIGHT to object storage with the returned method and
+  ///    every returned header. Not multipart, not base64. Proxying a 10 MiB
+  ///    file through Node to write it to S3 anyway is latency and memory for
+  ///    nothing;
+  /// 3. the attachment record, which renames `contentType` to `mimeType` —
+  ///    the same string under the two names its two schemas use.
+  ///
+  /// Throws [ChatlyRestException] when the route refuses (attachments off for
+  /// the channel, a MIME type outside the allow-list, a file over the
+  /// channel's cap); its `visitorMessage` is copy written for the visitor.
+  /// Throws [ChatlyUploadException] when object storage refuses the bytes. Do
+  /// not pre-check the size: the cap is per channel and the server owns it.
   Future<ChatlyAttachment> uploadAttachment({
     required Uint8List bytes,
     required String filename,
     required String mimeType,
   }) async {
-    final encoded = base64Encode(bytes);
-    final json = await _post('/v1/widget/uploads/presign', {
+    final sizeBytes = bytes.lengthInBytes;
+    final presigned = await _post('/v1/widget/uploads/presign', {
       'publicId': config.publicId,
       'visitorToken': visitorToken() ?? '',
       'filename': filename,
-      'mimeType': mimeType,
-      'data': encoded,
+      // `contentType` on the way in, `mimeType` on the way out. Same string.
+      'contentType': mimeType,
+      'sizeBytes': sizeBytes,
     });
-    return ChatlyAttachment.fromJson(Map<String, Object?>.from(json));
+
+    final url = presigned['url'];
+    final uploadId = presigned['uploadId'];
+    final publicUrl = presigned['publicUrl'];
+    if (url is! String || uploadId is! String || publicUrl is! String) {
+      throw const FormatException('uploads/presign: malformed response');
+    }
+    // Dev fallback: no object storage configured. The API answers with a
+    // `data:` sentinel rather than a real URL, and PUTting to it would throw a
+    // confusing transport error. Same guard as the web widget's `uploadOne`.
+    if (url.startsWith('data:')) {
+      throw ChatlyUploadException(
+        'File uploads are not configured on this deployment',
+      );
+    }
+
+    final method = (presigned['method'] as String?) ?? 'PUT';
+    final rawHeaders = presigned['headers'];
+    final headers = <String, String>{
+      if (rawHeaders is Map)
+        for (final entry in rawHeaders.entries)
+          '${entry.key}': '${entry.value}',
+    };
+
+    final request = http.Request(method, Uri.parse(url))
+      ..bodyBytes = bytes
+      ..headers.addAll(headers);
+    final streamed = await _http.send(request).timeout(config.requestTimeout);
+    final res = await http.Response.fromStream(streamed);
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw ChatlyUploadException(
+        'Upload failed (${res.statusCode})',
+        status: res.statusCode,
+      );
+    }
+
+    return ChatlyAttachment(
+      id: uploadId,
+      url: publicUrl,
+      filename: filename,
+      mimeType: mimeType,
+      sizeBytes: sizeBytes,
+    );
   }
 
   /// `POST /v1/widget/conversations/list`

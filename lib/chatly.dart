@@ -14,6 +14,12 @@ export 'src/chatly_client.dart' show Chatly;
 export 'src/chatly_config.dart' show ChatlyConfig;
 export 'src/chatly_identity.dart' show ChatlyIdentity;
 
+/// Failure types a host may need to catch: a refused widget call (whose
+/// `visitorMessage` is copy written for the visitor to read) and an upload
+/// that failed outside our API.
+export 'src/transport/rest_client.dart'
+    show ChatlyRealtimeToken, ChatlyRestException, ChatlyUploadException;
+
 export 'src/models/init_response.dart'
     show InitResponse, InitSession, InitWorkspace;
 export 'src/models/conversation.dart'

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../chatly_client.dart';
 import '../models/message.dart';
+import '../transport/rest_client.dart';
 import 'chatly_theme.dart';
 
 /// Bottom-anchored chat composer: paperclip + text field + send button.
@@ -121,17 +122,38 @@ class _ChatlyComposerState extends State<ChatlyComposer> {
       );
       if (!mounted) return;
       setState(() => _staged.add(attachment));
-    } catch (_) {
-      // Surface a transient SnackBar via the host scaffold if present.
+    } on Object catch (err) {
+      /*
+       * Show what the server said.
+       *
+       * The presign route refuses on three conditions and each one's copy is
+       * written for the VISITOR to read: "File uploads are turned off for
+       * this chat", "That file type is not accepted: …", "Files must be under
+       * 10 MB". This used to say "Upload failed. Try again." for all three,
+       * which is wrong twice over — two of them will fail identically on
+       * every retry, and the one sentence that told the visitor what to do
+       * instead was thrown away.
+       */
       if (mounted) {
         final messenger = ScaffoldMessenger.maybeOf(context);
         messenger?.showSnackBar(
-          const SnackBar(content: Text('Upload failed. Try again.')),
+          SnackBar(content: Text(_uploadFailureText(err))),
         );
       }
     } finally {
       if (mounted) setState(() => _isUploading = false);
     }
+  }
+
+  /// The visitor-facing reason an upload did not happen.
+  String _uploadFailureText(Object err) {
+    if (err is ChatlyRestException) {
+      return err.visitorMessage ?? 'Upload failed. Try again.';
+    }
+    if (err is ChatlyUploadException) {
+      return err.message;
+    }
+    return 'Upload failed. Try again.';
   }
 
   /// Crude extension → mime mapping; full table is overkill for the widget.
