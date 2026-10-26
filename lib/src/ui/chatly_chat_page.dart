@@ -86,7 +86,7 @@ class _ChatlyChatPageState extends State<ChatlyChatPage> {
         final ChatlyConversation? latest =
             convos.isEmpty ? null : convos.first;
         if (latest != null &&
-            latest.status != ChatlyConversationStatus.closed) {
+            latest.status.isResumable) {
           _conversationId = latest.id;
         }
       }

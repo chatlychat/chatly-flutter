@@ -197,6 +197,104 @@ void main() {
       );
       await transport.dispose();
     });
+
+    /// The read receipt's PAYLOAD, not just its event name.
+    ///
+    /// `markRead` sent the anchor as `messageId`, which is not a field
+    /// `messageReadPayloadSchema` declares. Because the other four fields
+    /// were already correct the parse SUCCEEDED and the anchor was silently
+    /// stripped — a published read envelope with no position. The server
+    /// makes `upToMessageId` optional precisely so a client may say "I opened
+    /// this as of now" without one, which is exactly what made the wrong
+    /// name invisible instead of a refusal.
+    ///
+    /// The test above this one reads `e[0]` only. `_FakeSocket.emissions`
+    /// has recorded `[event, data]` all along and no test had ever looked at
+    /// `data`, which is why a misnamed field in a correct-looking envelope
+    /// could sit here indefinitely. `sdk-kotlin` had the identical defect.
+    test('markRead names the anchor upToMessageId, as the gateway reads it',
+        () async {
+      final transport = build();
+      await transport.connectTo('conv_1');
+      transport.markRead('msg_7');
+
+      final emission = sockets.single.emissions.single;
+      expect(emission[0], 'message.read');
+      final payload = emission[1]! as Map<String, Object?>;
+      expect(payload['upToMessageId'], 'msg_7');
+      expect(payload.containsKey('messageId'), isFalse,
+          reason: 'messageId is not a field the server declares');
+      // The four the gateway REQUIRES, plus the reader identity it checks
+      // against the socket's own token.
+      expect(payload['conversationId'], 'conv_1');
+      expect(payload['readerType'], 'contact');
+      expect(payload['readerId'], 'c_1');
+      expect(payload['readAt'], isA<String>());
+      await transport.dispose();
+    });
+
+    test('markRead omits the anchor rather than sending null', () async {
+      // `upToMessageId` is optional server-side; a literal null is not the
+      // same as absent, and `apps/widget` pins the same omit behaviour.
+      final transport = build();
+      await transport.connectTo('conv_1');
+      transport.markRead();
+
+      final payload = sockets.single.emissions.single[1]! as Map<String, Object?>;
+      expect(payload.containsKey('upToMessageId'), isFalse);
+      expect(payload['conversationId'], 'conv_1');
+      await transport.dispose();
+    });
+  });
+
+  group('markConversationRead', () {
+    /// The DURABLE read receipt, which no mobile SDK had.
+    ///
+    /// All four render the unread badge from the server's own
+    /// `unreadContactCount`, and none called
+    /// `POST /v1/widget/conversations/{id}/read` — so the count could only go
+    /// UP, it survived app restarts, and the agent inbox never learned a
+    /// native visitor had seen the thread.
+    ///
+    /// The URL is asserted, not just the body, and that is deliberate: the
+    /// first version of this method interpolated the id with an ESCAPED
+    /// dollar, so it posted to a literal `/conversations/\$conversationId/read`
+    /// and would have 404'd on every call. `dart analyze` accepted it —
+    /// escaping a dollar is valid Dart, just wrong — so only a test that
+    /// reads the path could see it.
+    late List<http.Request> seen;
+
+    ChatlyRestClient build() {
+      seen = <http.Request>[];
+      final mock = MockClient((http.Request req) async {
+        seen.add(req);
+        return http.Response('{}', 200, headers: {'content-type': 'application/json'});
+      });
+      return ChatlyRestClient(
+        config: _config,
+        visitorToken: () => _sessionToken,
+        httpClient: mock,
+      );
+    }
+
+    test('posts to the conversation path with the id interpolated', () async {
+      await build().markConversationRead(conversationId: 'conv_7');
+      expect(seen.single.url.path, '/v1/widget/conversations/conv_7/read');
+      final body = jsonDecode(seen.single.body) as Map<String, Object?>;
+      expect(body['publicId'], _config.publicId);
+      expect(body['visitorToken'], _sessionToken);
+      // Absent, not null: the server treats it as "read as of now".
+      expect(body.containsKey('upToMessageId'), isFalse);
+    });
+
+    test('carries upToMessageId when the app tracks it', () async {
+      await build().markConversationRead(
+        conversationId: 'conv_7',
+        upToMessageId: 'msg_9',
+      );
+      final body = jsonDecode(seen.single.body) as Map<String, Object?>;
+      expect(body['upToMessageId'], 'msg_9');
+    });
   });
 
   group('uploadAttachment', () {

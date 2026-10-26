@@ -32,38 +32,49 @@ enum ChatlyMessageAuthor {
 }
 
 /// Kind / shape of a message body.
+///
+/// This union was wrong in BOTH directions until 2026-10-20. It listed
+/// `image`, `file`, `event` and `internalNote` — four values that are not
+/// members of the server's `message_kind` enum
+/// (`text | rich | note | system_event | attachment_only`) and that nothing
+/// can therefore ever send, so `ChatlyMessagesList`'s system-bubble branch
+/// compared against `event` and was always false — while `rich` was absent
+/// altogether.
+///
+/// `rich` is the one that cost something: it is the kind every formatted
+/// reply and every bot card carries, and [parse] falls back to [text], so an
+/// app branching on `kind` could not tell a product grid from a sentence.
+///
+/// `note` is deliberately not here, and that narrowing is the correct one —
+/// an agent's internal comment never reaches a visitor. The realtime gateway
+/// forwards `text`, `rich`, `attachment_only` and `system_event`
+/// (`VISITOR_VISIBLE_MESSAGE_KINDS`); the history route additionally filters
+/// `system_event` out in SQL, so that one arrives live and is absent after a
+/// reload.
 enum ChatlyMessageKind {
   /// Plain text.
   text,
 
-  /// Image attachment.
-  image,
-
-  /// File attachment.
-  file,
+  /// A formatted body, or one carrying rich blocks — a card, a product grid,
+  /// a fulfilment timeline. Render `blocks` when present.
+  rich,
 
   /// Attachment(s) with no body text.
   attachmentOnly,
 
-  /// In-stream event (joined, assigned, etc.).
-  event,
-
-  /// Internal note (only visible to agents).
-  internalNote;
+  /// The platform's own audit turn ("assigned to …"). Arrives on the
+  /// socket; the history route does not serve it.
+  systemEvent;
 
   /// Parses a wire-format kind. Falls back to [text] for unknowns.
   static ChatlyMessageKind parse(String? raw) {
     switch (raw) {
-      case 'image':
-        return ChatlyMessageKind.image;
-      case 'file':
-        return ChatlyMessageKind.file;
+      case 'rich':
+        return ChatlyMessageKind.rich;
       case 'attachment_only':
         return ChatlyMessageKind.attachmentOnly;
-      case 'event':
-        return ChatlyMessageKind.event;
-      case 'internal_note':
-        return ChatlyMessageKind.internalNote;
+      case 'system_event':
+        return ChatlyMessageKind.systemEvent;
       case 'text':
       default:
         return ChatlyMessageKind.text;
@@ -73,18 +84,14 @@ enum ChatlyMessageKind {
   /// Wire format of this kind.
   String get wireName {
     switch (this) {
-      case ChatlyMessageKind.internalNote:
-        return 'internal_note';
       case ChatlyMessageKind.text:
         return 'text';
-      case ChatlyMessageKind.image:
-        return 'image';
-      case ChatlyMessageKind.file:
-        return 'file';
+      case ChatlyMessageKind.rich:
+        return 'rich';
       case ChatlyMessageKind.attachmentOnly:
         return 'attachment_only';
-      case ChatlyMessageKind.event:
-        return 'event';
+      case ChatlyMessageKind.systemEvent:
+        return 'system_event';
     }
   }
 }

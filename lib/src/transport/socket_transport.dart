@@ -249,17 +249,29 @@ class ChatlySocketTransport {
   /// Emits a typing-stop signal for the connected conversation.
   void typingStop(String conversationId) => _emit('typing.stop');
 
-  /// Tells the agent side the visitor has read up to [messageId].
+  /// Tells the agent side the visitor has read up to [upToMessageId].
   ///
   /// The one other thing a visitor socket may publish. The gateway refuses a
   /// payload whose ids do not match the token's, so this asserts a fact about
   /// this visitor in this conversation only.
-  void markRead(String messageId) {
+  ///
+  /// The anchor key is `upToMessageId`. It was `messageId`, which is not a
+  /// field `messageReadPayloadSchema` declares — and because the other four
+  /// fields here were already correct, the parse SUCCEEDED with the anchor
+  /// silently stripped: a published read envelope with no position. The
+  /// server treats `upToMessageId` as optional precisely so a client may say
+  /// "I opened this as of now" without one, which is what made the wrong name
+  /// invisible rather than a refusal.
+  ///
+  /// Nullable for that same reason, and omitted rather than sent as null when
+  /// absent. `sdk-kotlin` had the identical defect and `apps/widget` pins the
+  /// omit-rather-than-null behaviour in its own spec.
+  void markRead([String? upToMessageId]) {
     final conversationId = _conversationId;
     if (conversationId == null) return;
     _emit('message.read', <String, Object?>{
       'conversationId': conversationId,
-      'messageId': messageId,
+      if (upToMessageId != null) 'upToMessageId': upToMessageId,
       'readerType': 'contact',
       'readerId': contactId,
       'readAt': DateTime.now().toUtc().toIso8601String(),

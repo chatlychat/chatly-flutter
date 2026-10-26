@@ -164,7 +164,7 @@ class _Bubble extends StatelessWidget {
 
   bool get _isContact => message.author == ChatlyMessageAuthor.contact;
   bool get _isSystem => message.author == ChatlyMessageAuthor.system ||
-      message.kind == ChatlyMessageKind.event;
+      message.kind == ChatlyMessageKind.systemEvent;
 
   @override
   Widget build(BuildContext context) {

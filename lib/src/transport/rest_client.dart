@@ -319,6 +319,35 @@ class ChatlyRestClient {
         .toList(growable: false);
   }
 
+  /// `POST /v1/widget/conversations/{id}/read` — persist how far the visitor
+  /// has read.
+  ///
+  /// The DURABLE half of a read receipt, and none of the four mobile SDKs had
+  /// it: only the web widget ever called this route. All four render the
+  /// unread badge from the server's own `unreadContactCount`, so without this
+  /// the count could only go UP — it survived app restarts, and the agent
+  /// inbox never learned a native visitor had seen the thread.
+  ///
+  /// Distinct from `ChatlySocketTransport.markRead`, which emits the live
+  /// "Read ✓" tick. That one is advisory and goes with the connection; this
+  /// is the row. It is also what `Chatly.markAllRead()` was missing — that
+  /// method only ever mutated a local counter while its docstring claimed
+  /// "server-side read state is handled by the chat UI", pointing at a caller
+  /// that did not exist.
+  ///
+  /// `upToMessageId` is optional server-side: omitting it means "read as of
+  /// now", which is what an app not tracking per-message visibility sends.
+  Future<void> markConversationRead({
+    required String conversationId,
+    String? upToMessageId,
+  }) async {
+    await _post('/v1/widget/conversations/$conversationId/read', {
+      'publicId': config.publicId,
+      'visitorToken': visitorToken() ?? '',
+      if (upToMessageId != null) 'upToMessageId': upToMessageId,
+    });
+  }
+
   /// `POST /v1/widget/messages/list`
   Future<List<ChatlyMessage>> listMessages({
     required String conversationId,

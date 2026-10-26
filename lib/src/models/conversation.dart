@@ -1,4 +1,14 @@
 /// Lifecycle state of a conversation.
+///
+/// FIVE states, and `merged` was missing until 2026-10-20. The server's
+/// `conversationStatusSchema` has had it all along and
+/// `POST /v1/widget/conversations/list` applies **no status filter**, so an
+/// agent merging two of a contact's threads — an ordinary thing to do to a
+/// visitor who opened the chat twice — hands this client a row it could not
+/// represent. [parse] falls back to [open] for anything it does not know, so
+/// the loser of a merge read as a live thread, and `ChatlyChatPage` resumed
+/// it: the app wrote into a conversation that had been merged away and no
+/// agent was looking at.
 enum ChatlyConversationStatus {
   /// Open for replies.
   open,
@@ -10,9 +20,20 @@ enum ChatlyConversationStatus {
   closed,
 
   /// Awaiting first agent reply.
-  pending;
+  pending,
+
+  /// Merged into another conversation. This thread is a tombstone: its
+  /// messages now live on the winner, and the server answers `conflict`
+  /// rather than a no-op if you try to close it.
+  merged;
 
   /// Parses a wire-format status string. Falls back to [open] for unknowns.
+  ///
+  /// The fallback is deliberate — a status this build has never heard of must
+  /// not make the whole list undecodable — but it is also what hid `merged`,
+  /// so do not branch on `!= closed` to mean "usable". Use [isResumable],
+  /// which is false for every state that is not, including the unknown one
+  /// this fallback cannot distinguish.
   static ChatlyConversationStatus parse(String? raw) {
     switch (raw) {
       case 'snoozed':
@@ -21,11 +42,24 @@ enum ChatlyConversationStatus {
         return ChatlyConversationStatus.closed;
       case 'pending':
         return ChatlyConversationStatus.pending;
+      case 'merged':
+        return ChatlyConversationStatus.merged;
       case 'open':
       default:
         return ChatlyConversationStatus.open;
     }
   }
+
+  /// Whether a visitor may keep writing into a thread in this state.
+  ///
+  /// One place, so a state added later is decided once rather than by
+  /// whichever `!=` comparison a caller happened to write. `merged` is not
+  /// resumable even though it is not closed, which is exactly the
+  /// distinction a `!= closed` test cannot make.
+  bool get isResumable =>
+      this == ChatlyConversationStatus.open ||
+      this == ChatlyConversationStatus.pending ||
+      this == ChatlyConversationStatus.snoozed;
 
   /// Wire format of this status (matches the server enum).
   String get wireName => name;
