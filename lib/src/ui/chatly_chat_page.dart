@@ -249,6 +249,14 @@ class _ChatlyChatPageState extends State<ChatlyChatPage> {
                         return ChatlyMessagesList(
                           messages: _messages,
                           theme: theme,
+                          onBlockAction: config?.onBlockAction,
+                          // A quick reply IS an ordinary visitor message, so
+                          // it goes down the same send path as the composer
+                          // — optimistic bubble, first-send conversation
+                          // creation and error handling included.
+                          onQuickReply: (value) => unawaited(
+                            _handleSend(value, const <ChatlyAttachment>[]),
+                          ),
                         );
                       },
                     ),

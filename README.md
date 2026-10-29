@@ -145,6 +145,46 @@ final hits = await Chatly.instance.searchKb(query: 'refund policy');
 final article = await Chatly.instance.getKbArticle(hits.first.slug);
 ```
 
+## Rich messages (cards, grids, order status)
+
+A message with `kind == ChatlyMessageKind.rich` carries a block envelope on
+`ChatlyMessage.blocks`, and the bundled UI draws it: text, media, field lists,
+cards, card grids and carousels, action buttons, quick replies, fulfilment
+timelines, comparison tables, places, status lines and dividers.
+
+Pressing a block button is handed to your app, whatever its kind — this SDK has
+no postback or canvas transport of its own, and opening a URL would mean a
+dependency you have to rebuild for. Wire it up and the buttons go live; leave
+it out and they render disabled instead of looking live and doing nothing.
+Quick replies are the exception: they are ordinary visitor messages, and the
+bundled UI sends them.
+
+```dart
+await Chatly.instance.configure(ChatlyConfig(
+  publicId: 'pub_abc123',
+  apiHost: 'api.chatlychat.com',
+  onBlockAction: (action) {
+    switch (action.kind) {
+      case ChatlyBlockActionKind.hostEvent:
+        // action.value is the event name, action.data its payload —
+        // run your own payment sheet, cart or native screen here.
+        break;
+      case ChatlyBlockActionKind.url:
+        // action.value is an https:, mailto: or tel: link, already checked.
+        break;
+      default:
+        break;
+    }
+  },
+));
+```
+
+Rendering cards with your own design system instead? `readChatlyBlocks(
+message.blocks)` is exported for exactly that. Use it rather than reading the
+raw map: it is what refuses an `http:` image, narrows an action's scheme to the
+three the schema allows, and drops block types your build of the app has never
+heard of instead of throwing on them.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).

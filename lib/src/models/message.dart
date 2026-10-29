@@ -56,7 +56,9 @@ enum ChatlyMessageKind {
   text,
 
   /// A formatted body, or one carrying rich blocks — a card, a product grid,
-  /// a fulfilment timeline. Render `blocks` when present.
+  /// a fulfilment timeline. Read [ChatlyMessage.blocks] with
+  /// `readChatlyBlocks` when it is present, which is what the bundled
+  /// [ChatlyMessagesList] does.
   rich,
 
   /// Attachment(s) with no body text.
@@ -163,6 +165,7 @@ class ChatlyMessage {
     required this.createdAt,
     this.attachments = const <ChatlyAttachment>[],
     this.conversationId,
+    this.blocks,
   });
 
   /// Message id.
@@ -187,6 +190,27 @@ class ChatlyMessage {
   /// events) and null otherwise (`/messages/list` responses).
   final String? conversationId;
 
+  /// The rich-block envelope, exactly as the server sent it.
+  ///
+  /// Deliberately untyped. `messages.blocks` is a jsonb column written by
+  /// whoever holds an API key and read by apps older than the server they are
+  /// talking to, so a strict decode here would throw on a block type this
+  /// release has never heard of and lose the whole message. Pass it to
+  /// `readChatlyBlocks`, which drops what it cannot draw and keeps the rest;
+  /// that is also what [ChatlyMessagesList] does.
+  ///
+  /// Present on [ChatlyMessageKind.rich] messages — every bot card, product
+  /// grid and fulfilment timeline — and null on everything else.
+  ///
+  /// The RENDERED subset is the twelve block types the React Native SDK
+  /// renders: `text`, `media`, `fields`, `card`, `card_grid`, `actions`,
+  /// `quick_replies`, `order_status`, `table`, `place`, `status` and
+  /// `divider`. The two spatial fields (`card.model`, `card_grid.placement`)
+  /// are read by neither this SDK nor any other phone surface — they exist
+  /// for a host embedding a 3D world — so they are dropped, and this value
+  /// is the place to find them if you are that host.
+  final Object? blocks;
+
   /// Parses a message from the REST `/messages/list` envelope.
   factory ChatlyMessage.fromJson(Map<String, Object?> json) {
     final raw = json['attachments'];
@@ -206,6 +230,7 @@ class ChatlyMessage {
               ?.toUtc() ??
           DateTime.now().toUtc(),
       conversationId: json['conversationId'] as String?,
+      blocks: json['blocks'],
     );
   }
 
@@ -221,13 +246,17 @@ class ChatlyMessage {
     return ChatlyMessage(
       id: payload['id'] as String? ?? '',
       author: ChatlyMessageAuthor.parse(payload['authorType'] as String?),
-      kind: ChatlyMessageKind.text,
+      // The payload carries `kind` and this used to hard-code `text`, so
+      // every card arrived live looking like a sentence and only became a
+      // card after a reload re-fetched it over REST.
+      kind: ChatlyMessageKind.parse(payload['kind'] as String?),
       body: payload['body'] as String? ?? '',
       attachments: atts,
       createdAt: DateTime.tryParse(payload['createdAt'] as String? ?? '')
               ?.toUtc() ??
           DateTime.now().toUtc(),
       conversationId: payload['conversationId'] as String?,
+      blocks: payload['blocks'],
     );
   }
 
@@ -240,6 +269,7 @@ class ChatlyMessage {
         'attachments': attachments.map((a) => a.toJson()).toList(),
         'createdAt': createdAt.toUtc().toIso8601String(),
         if (conversationId != null) 'conversationId': conversationId,
+        if (blocks != null) 'blocks': blocks,
       };
 
   /// Returns a copy of this message with the given fields overridden.
@@ -251,6 +281,7 @@ class ChatlyMessage {
     List<ChatlyAttachment>? attachments,
     DateTime? createdAt,
     String? conversationId,
+    Object? blocks,
   }) {
     return ChatlyMessage(
       id: id ?? this.id,
@@ -260,6 +291,7 @@ class ChatlyMessage {
       attachments: attachments ?? this.attachments,
       createdAt: createdAt ?? this.createdAt,
       conversationId: conversationId ?? this.conversationId,
+      blocks: blocks ?? this.blocks,
     );
   }
 }

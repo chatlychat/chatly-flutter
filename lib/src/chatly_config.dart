@@ -1,3 +1,4 @@
+import 'ui/chatly_block_card.dart';
 import 'ui/chatly_theme.dart';
 
 /// Immutable configuration for the [Chatly] singleton.
@@ -21,6 +22,7 @@ class ChatlyConfig {
     this.theme = const ChatlyTheme(),
     this.autoConnectRealtime = true,
     this.requestTimeout = const Duration(seconds: 20),
+    this.onBlockAction,
   });
 
   /// Public widget id for the workspace. Required.
@@ -51,6 +53,16 @@ class ChatlyConfig {
   /// HTTP request timeout for REST calls.
   final Duration requestTimeout;
 
+  /// Where a pressed rich-block button goes — a card's "Pay \$48.20", a
+  /// product grid's "Show all 60", a `host_event` the app is meant to run.
+  ///
+  /// The bundled chat UI has no way to act on one itself: see the header of
+  /// `ChatlyBlocks`. Wire this and the buttons on every card go live; leave
+  /// it null and they render disabled rather than looking live and doing
+  /// nothing. A quick reply is not affected — that is an ordinary visitor
+  /// message and the bundled UI sends it.
+  final ChatlyBlockActionHandler? onBlockAction;
+
   /// Returns the base REST URL (`https://api.chatlychat.com`).
   String get restBaseUrl => '${useTls ? 'https' : 'http'}://$apiHost';
 
@@ -69,6 +81,7 @@ class ChatlyConfig {
     ChatlyTheme? theme,
     bool? autoConnectRealtime,
     Duration? requestTimeout,
+    ChatlyBlockActionHandler? onBlockAction,
   }) {
     return ChatlyConfig(
       publicId: publicId ?? this.publicId,
@@ -80,6 +93,7 @@ class ChatlyConfig {
       theme: theme ?? this.theme,
       autoConnectRealtime: autoConnectRealtime ?? this.autoConnectRealtime,
       requestTimeout: requestTimeout ?? this.requestTimeout,
+      onBlockAction: onBlockAction ?? this.onBlockAction,
     );
   }
 }

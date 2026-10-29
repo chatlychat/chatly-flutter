@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../models/message.dart';
+import 'chatly_block_card.dart';
+import 'chatly_blocks.dart';
 import 'chatly_theme.dart';
 
 /// Renders one attachment inside a message bubble. Image mime types come
@@ -119,6 +121,8 @@ class ChatlyMessagesList extends StatelessWidget {
     required this.messages,
     required this.theme,
     this.padding = const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+    this.onBlockAction,
+    this.onQuickReply,
   });
 
   /// Messages to render. Order should be oldest-first.
@@ -129,6 +133,13 @@ class ChatlyMessagesList extends StatelessWidget {
 
   /// Padding around the list contents.
   final EdgeInsets padding;
+
+  /// Where a pressed rich-block button goes. See [ChatlyBlocks]: with none
+  /// wired, block buttons render disabled.
+  final ChatlyBlockActionHandler? onBlockAction;
+
+  /// Where a pressed quick reply goes — the value, not the label.
+  final ChatlyQuickReplyHandler? onQuickReply;
 
   @override
   Widget build(BuildContext context) {
@@ -150,17 +161,29 @@ class ChatlyMessagesList extends StatelessWidget {
       itemCount: messages.length,
       itemBuilder: (context, index) {
         final msg = messages[messages.length - 1 - index];
-        return _Bubble(message: msg, theme: theme);
+        return _Bubble(
+          message: msg,
+          theme: theme,
+          onBlockAction: onBlockAction,
+          onQuickReply: onQuickReply,
+        );
       },
     );
   }
 }
 
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.message, required this.theme});
+  const _Bubble({
+    required this.message,
+    required this.theme,
+    this.onBlockAction,
+    this.onQuickReply,
+  });
 
   final ChatlyMessage message;
   final ChatlyTheme theme;
+  final ChatlyBlockActionHandler? onBlockAction;
+  final ChatlyQuickReplyHandler? onQuickReply;
 
   bool get _isContact => message.author == ChatlyMessageAuthor.contact;
   bool get _isSystem => message.author == ChatlyMessageAuthor.system ||
@@ -232,6 +255,17 @@ class _Bubble extends StatelessWidget {
                         ),
                       ),
                   ],
+                  // Rich blocks, INSIDE the bubble and after the body — the
+                  // same placement as the React Native SDK, and deliberately
+                  // not on the system branch above: a system line is a
+                  // sentence about the conversation, never a card.
+                  if (message.blocks != null)
+                    ChatlyBlocks(
+                      blocks: message.blocks,
+                      theme: theme,
+                      onAction: onBlockAction,
+                      onQuickReply: onQuickReply,
+                    ),
                   const SizedBox(height: 4),
                   Text(
                     DateFormat.jm().format(message.createdAt.toLocal()),
